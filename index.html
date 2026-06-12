@@ -12,7 +12,40 @@
 <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <!-- v32: Chart.js CDN 의존 제거 — 내장 MiniChart 렌더러가 모든 그래프를 즉시 표시합니다. -->
 <!-- v32: chartjs-plugin-datalabels CDN 의존 제거 — 값 라벨은 내장 렌더러/보정 스크립트가 처리합니다. -->
-<script async src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* ==========================================================
+   Supabase 설정 — 아래 2개 값만 본인 프로젝트 값으로 교체
+   - Project URL: Supabase > Project Settings > API > Project URL
+   - anon key:    Supabase > Project Settings > API > Project API keys > anon/public
+   ※ service_role key는 절대 넣지 마세요.
+   ========================================================== */
+window.DHF_SUPABASE_URL = 'https://ejghcmxerswoyiyxpuro.supabase.co';
+window.DHF_SUPABASE_ANON_KEY = 'sb_publishable_KcEH2eD-PcrQg642o1j4Bw_sKJLIOSv';
+
+window.dhfSupabase = null;
+try {
+  const hasConfig =
+    window.DHF_SUPABASE_URL &&
+    window.DHF_SUPABASE_URL.indexOf('supabase.co') > -1 &&
+    window.DHF_SUPABASE_URL.indexOf('너의프로젝트ID') === -1 &&
+    window.DHF_SUPABASE_ANON_KEY &&
+    window.DHF_SUPABASE_ANON_KEY.indexOf('너의_anon') === -1;
+
+  if (hasConfig && window.supabase) {
+    window.dhfSupabase = window.supabase.createClient(
+      window.DHF_SUPABASE_URL,
+      window.DHF_SUPABASE_ANON_KEY
+    );
+    console.log('[Supabase] 연결 준비 완료');
+  } else {
+    console.warn('[Supabase] URL/anon key를 입력하면 온라인 동기화가 활성화됩니다.');
+  }
+} catch (e) {
+  console.warn('[Supabase] 초기화 실패:', e);
+}
+</script>
 
 <style>
 :root {
@@ -16907,6 +16940,186 @@ setTimeout(initExecutiveScenarioLab, 800);
   window.__SV_SPECIES_CFG__ = SV_SPECIES_CFG;
   function cfgOf(maj){ return SV_SPECIES_CFG[maj] || {preset:'balanced',blendW:0.5,growthBuf:0.5}; }
   var charts = {};
+
+  /* ==========================================================
+     Supabase 온라인 동기화
+     - 한 사용자가 실적/계획/주간실적을 업로드하면 sales_forecast_state 테이블에 저장
+     - 다른 사용자는 Realtime으로 변경사항을 받아 같은 화면을 봄
+     ========================================================== */
+  var SALES_STATE_ID = 'main';
+  var SALES_SYNC_STARTED = false;
+  var SALES_SUBSCRIBED = false;
+  var IS_REMOTE_APPLYING = false;
+
+  function salesSyncStatus(msg, type){
+    try{
+      var st=document.getElementById('svUploadStatus');
+      if(!st) return;
+      if(type==='ok') st.style.color='var(--signal-pos)';
+      else if(type==='err') st.style.color='var(--signal-neg)';
+      else st.style.color='var(--ink-mid)';
+      st.textContent=msg;
+    }catch(e){}
+  }
+
+  function hasSupabase(){
+    return !!(window.dhfSupabase && typeof window.dhfSupabase.from === 'function');
+  }
+
+  function getSalesForecastState(){
+    return {
+      SV_DATA: SV_DATA,
+      SV_SALES_PLAN: SV_SALES_PLAN,
+      SV_SALES_PLAN_BY_MAJ: SV_SALES_PLAN_BY_MAJ,
+      SV_SPECIES_CFG: SV_SPECIES_CFG,
+      WEEKLY_ACTUALS: window.__weeklyActuals || {},
+      ACTUAL_OVERRIDES: window.__actualOverrides || {},
+      savedAt: new Date().toISOString()
+    };
+  }
+
+  function applySalesForecastState(state){
+    if(!state) return;
+
+    if(state.SV_DATA){
+      SV_DATA = state.SV_DATA;
+      window.__SV_DATA__ = SV_DATA;
+    }
+
+    if(state.SV_SALES_PLAN){
+      SV_SALES_PLAN = state.SV_SALES_PLAN;
+      window.__SV_SALES_PLAN__ = SV_SALES_PLAN;
+    }
+
+    if(state.SV_SALES_PLAN_BY_MAJ){
+      SV_SALES_PLAN_BY_MAJ = state.SV_SALES_PLAN_BY_MAJ;
+      window.__SV_SALES_PLAN_BY_MAJ__ = SV_SALES_PLAN_BY_MAJ;
+    }
+
+    if(state.SV_SPECIES_CFG){
+      Object.keys(state.SV_SPECIES_CFG).forEach(function(k){
+        SV_SPECIES_CFG[k] = state.SV_SPECIES_CFG[k];
+      });
+      window.__SV_SPECIES_CFG__ = SV_SPECIES_CFG;
+    }
+
+    if(state.WEEKLY_ACTUALS){
+      window.__weeklyActuals = state.WEEKLY_ACTUALS;
+    }
+
+    if(state.ACTUAL_OVERRIDES){
+      window.__actualOverrides = state.ACTUAL_OVERRIDES;
+    }
+
+    resetForecastCache();
+    buildFilters();
+    syncSpeciesControls();
+    render();
+
+    try{ if(typeof window.__v17_applyToBaseline === 'function') window.__v17_applyToBaseline(); }catch(e){}
+    try{ if(typeof window.__v17_refreshDisplay === 'function') window.__v17_refreshDisplay(); }catch(e){}
+    try{ if(typeof window.renderAll === 'function') window.renderAll(); }catch(e){}
+    try{ if(typeof window.fcRender === 'function') window.fcRender(window.fcCurrentSubview || 'overview'); }catch(e){}
+  }
+
+  async function saveSalesForecastState(){
+    if(IS_REMOTE_APPLYING) return;
+    if(!hasSupabase()){
+      console.warn('[Supabase] 설정값이 없어 저장을 건너뜁니다.');
+      return;
+    }
+
+    var payload = getSalesForecastState();
+    var res = await window.dhfSupabase
+      .from('sales_forecast_state')
+      .upsert({
+        id: SALES_STATE_ID,
+        state: payload,
+        updated_at: new Date().toISOString()
+      });
+
+    if(res && res.error){
+      console.error('[Supabase] save error:', res.error);
+      salesSyncStatus('Supabase 저장 실패: ' + res.error.message, 'err');
+      return;
+    }
+    console.log('[Supabase] 판매량 분석 상태 저장 완료');
+  }
+
+  async function loadSalesForecastState(){
+    if(!hasSupabase()) return false;
+
+    var res = await window.dhfSupabase
+      .from('sales_forecast_state')
+      .select('state')
+      .eq('id', SALES_STATE_ID)
+      .single();
+
+    if(res && res.error){
+      console.warn('[Supabase] load error:', res.error);
+      return false;
+    }
+
+    if(res && res.data && res.data.state && Object.keys(res.data.state).length){
+      IS_REMOTE_APPLYING = true;
+      applySalesForecastState(res.data.state);
+      IS_REMOTE_APPLYING = false;
+      salesSyncStatus('Supabase 최신 실적 데이터를 불러왔습니다.', 'ok');
+      return true;
+    }
+    return false;
+  }
+
+  function subscribeSalesForecastState(){
+    if(!hasSupabase() || SALES_SUBSCRIBED) return;
+    SALES_SUBSCRIBED = true;
+
+    window.dhfSupabase
+      .channel('sales-forecast-state')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'sales_forecast_state',
+          filter: 'id=eq.' + SALES_STATE_ID
+        },
+        function(payload){
+          if(!payload.new || !payload.new.state) return;
+
+          IS_REMOTE_APPLYING = true;
+          applySalesForecastState(payload.new.state);
+          IS_REMOTE_APPLYING = false;
+
+          salesSyncStatus('다른 사용자가 업로드/수정한 최신 실적이 반영되었습니다.', 'ok');
+        }
+      )
+      .subscribe(function(status){
+        console.log('[Supabase] realtime status:', status);
+      });
+  }
+
+  async function startSalesForecastSync(){
+    if(SALES_SYNC_STARTED) return;
+    SALES_SYNC_STARTED = true;
+
+    if(!hasSupabase()){
+      render();
+      return;
+    }
+
+    try{
+      await loadSalesForecastState();
+      subscribeSalesForecastState();
+    }catch(e){
+      console.warn('[Supabase] sync start error:', e);
+    }
+    render();
+  }
+
+  window.saveSalesForecastState = saveSalesForecastState;
+  window.loadSalesForecastState = loadSalesForecastState;
+  window.startSalesForecastSync = startSalesForecastSync;
   // 2026 공휴일(일요일은 요일로 자동처리)
   var HOLIDAYS = {
     '2026-01-01':1,'2026-02-16':1,'2026-02-17':1,'2026-02-18':1,'2026-03-01':1,'2026-03-02':1,
@@ -18010,6 +18223,7 @@ setTimeout(initExecutiveScenarioLab, 800);
         SV_SALES_PLAN[m] = d.total;
         if(Object.keys(d.byMaj).length) SV_SALES_PLAN_BY_MAJ[m]=d.byMaj;
         resetForecastCache(); render();
+        saveSalesForecastState();
         var majTxt=Object.keys(d.byMaj).map(function(k){return k+' '+fmt(d.byMaj[k]);}).join(', ');
         st.style.color='var(--signal-pos)';
         st.textContent='✓ 판매계획 반영 — '+m+'월 영업제시 '+fmt(d.total)+'톤'+(majTxt?' ('+majTxt+')':'')+' · 과거 달성률 보정 후 예측에 결합했습니다.';
@@ -18061,6 +18275,7 @@ setTimeout(initExecutiveScenarioLab, 800);
         SV_SALES_PLAN[m]=total;
         if(Object.keys(byMaj).length) SV_SALES_PLAN_BY_MAJ[m]=byMaj; else delete SV_SALES_PLAN_BY_MAJ[m];
         resetForecastCache(); render();
+        saveSalesForecastState();
         var majTxt=Object.keys(byMaj).map(function(k){return k+' '+fmt(byMaj[k]);}).join(', ');
         st.style.color='var(--signal-pos)';
         st.innerHTML='✓ 이미지 판독 완료 — '+m+'월 영업제시 <b>'+fmt(total)+'톤</b>'+(majTxt?' ('+majTxt+')':'')+' · 예측에 결합했습니다. <span style="color:var(--ink-light)">판독값이 다르면 아래 입력칸에서 수정하세요.</span>';
@@ -18081,6 +18296,7 @@ setTimeout(initExecutiveScenarioLab, 800);
         var wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
         parseWorkbook(wb);
         buildFilters(); render();
+        saveSalesForecastState();
         var n=Object.keys(SV_DATA.groups).length;
         st.style.color='var(--signal-pos)';
         st.textContent='✓ 업로드 완료 — '+n+'개 그룹 반영, 최종 실적일 '+(SV_DATA.meta.lastActualDate||'-')+' 기준으로 재예측했습니다.';
@@ -18137,7 +18353,17 @@ setTimeout(initExecutiveScenarioLab, 800);
     var ym=document.getElementById('svYtdMonth');
     if(ym) ym.addEventListener('change',function(){ SV_YTD_MONTH=+ym.value; render(); });
     var up=document.getElementById('svUpload');if(up)up.addEventListener('change',function(e){if(e.target.files[0])handleUpload(e.target.files[0]);});
-    var rb=document.getElementById('svResetBtn');if(rb)rb.addEventListener('click',function(){SV_DATA=JSON.parse(JSON.stringify(window.__SV_DATA_ORIG__));window.__SV_DATA__=SV_DATA;buildFilters();render();var st=document.getElementById('svUploadStatus');st.style.color='var(--ink-mid)';st.textContent='기본 데이터로 복원했습니다.';});
+    var rb=document.getElementById('svResetBtn');if(rb)rb.addEventListener('click',function(){
+      if(!confirm('전체 사용자에게 보이는 실적/예측 데이터를 기본 데이터로 복원할까요?')) return;
+      SV_DATA=JSON.parse(JSON.stringify(window.__SV_DATA_ORIG__));
+      window.__SV_DATA__=SV_DATA;
+      buildFilters();
+      render();
+      var st=document.getElementById('svUploadStatus');
+      st.style.color='var(--ink-mid)';
+      st.textContent='기본 데이터로 복원했습니다.';
+      saveSalesForecastState();
+    });
     var eb=document.getElementById('svExportBtn');if(eb)eb.addEventListener('click',exportXlsx);
     var pu=document.getElementById('svPlanUpload');if(pu)pu.addEventListener('change',function(e){if(e.target.files[0])handlePlanUpload(e.target.files[0]);});
     var pimg=document.getElementById('svPlanImgUpload');if(pimg)pimg.addEventListener('change',function(e){if(e.target.files[0])handlePlanImageUpload(e.target.files[0]);});
@@ -18148,6 +18374,7 @@ setTimeout(initExecutiveScenarioLab, 800);
       if(v==null||v<=0){ var h=document.getElementById('svSalesPlanHint'); h.style.color='var(--signal-neg)'; h.textContent='유효한 톤 수치를 입력하세요.'; return; }
       SV_SALES_PLAN[T.m]=v; delete SV_SALES_PLAN_BY_MAJ[T.m];  // 직접입력은 전사값으로(대분류 배분 해제)
       resetForecastCache(); render();
+      saveSalesForecastState();
     });
     var pivots=['svPivotRow','svPivotCol','svPivotVal'];
     pivots.forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('change',render);});
@@ -18160,6 +18387,7 @@ setTimeout(initExecutiveScenarioLab, 800);
         var maj=sel.getAttribute('data-maj'); var p=SV_PRESETS[sel.value];
         SV_SPECIES_CFG[maj]={preset:sel.value, blendW:p.blendW, growthBuf:p.growthBuf};
         resetForecastCache(); syncSpeciesControls(); render();
+        saveSalesForecastState();
       });
     });
     var ranges=document.querySelectorAll('.sv-sp-wrange');
@@ -18167,6 +18395,7 @@ setTimeout(initExecutiveScenarioLab, 800);
       r.addEventListener('input',function(){
         var maj=r.getAttribute('data-maj'); var w=(+r.value)/100;
         var cur=cfgOf(maj); SV_SPECIES_CFG[maj]={preset:'custom', blendW:w, growthBuf:cur.growthBuf};
+        saveSalesForecastState();
         var vEl=document.querySelector('.sv-sp-wval[data-maj="'+maj+'"]'); if(vEl) vEl.textContent=r.value+'%';
         var psel=document.querySelector('.sv-sp-preset[data-maj="'+maj+'"]'); if(psel) psel.value='';
         resetForecastCache(); render();
@@ -18197,7 +18426,8 @@ setTimeout(initExecutiveScenarioLab, 800);
     if(!window.__SV_DATA_ORIG__) window.__SV_DATA_ORIG__=JSON.parse(JSON.stringify(SV_DATA));
     bind();
     if(!document.getElementById('svMaj').options.length) buildFilters();
-    render();
+    if(!SALES_SYNC_STARTED) startSalesForecastSync();
+    else render();
   };
   window.__svResizeCharts=function(){ Object.keys(charts).forEach(function(id){try{charts[id].resize();}catch(e){}}); };
 })();
@@ -19397,6 +19627,7 @@ body.dark #view-fc-quant .v17-help b{ color: #f0e0a0; }
       
       refreshV17Display();
       setStatus('🗑️ 전체 데이터 삭제 + 베이스라인 복원 완료', 'ready');
+      if(typeof window.saveSalesForecastState === 'function') window.saveSalesForecastState();
     };
   }
   
@@ -19543,6 +19774,7 @@ body.dark #view-fc-quant .v17-help b{ color: #f0e0a0; }
     
     const action = isReplace ? '대체' : '추가';
     setStatus(`✓ ${year}년 ${week}주차 실적 ${action} 완료. ${count}개 축종 · 베이스라인 ${result?.changeCount || 0}건 갱신 · 잔여 기간 예측 재계산 완료.`, 'ready');
+    if(typeof window.saveSalesForecastState === 'function') window.saveSalesForecastState();
   }
   
   function setStatus(msg, cls){
