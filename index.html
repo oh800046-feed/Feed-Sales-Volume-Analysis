@@ -16983,11 +16983,69 @@ setTimeout(initExecutiveScenarioLab, 800);
     };
   }
 
+  function normalizeSalesDateKey(ds){
+    return String(ds || '').replace(/-/g, '/');
+  }
+
+  function cloneSalesSyncObject(obj){
+    try { return JSON.parse(JSON.stringify(obj)); } catch(e) { return obj; }
+  }
+
+  function findRemoteSalesGroup(remoteGroups, key, localGroup){
+    if(remoteGroups[key]) return remoteGroups[key];
+    var codeSig = localGroup && [localGroup.majC, localGroup.midC, localGroup.offC].join('|');
+    var nameSig = localGroup && [localGroup.maj, localGroup.mid, localGroup.off].join('|');
+    for(var rk in remoteGroups){
+      var rg = remoteGroups[rk];
+      if(!rg) continue;
+      if(codeSig && codeSig !== '||' && [rg.majC, rg.midC, rg.offC].join('|') === codeSig) return rg;
+      if(nameSig && [rg.maj, rg.mid, rg.off].join('|') === nameSig) return rg;
+    }
+    return null;
+  }
+
+  function mergeRemoteSalesDataPreservingLocalActuals(remoteData){
+    var merged = cloneSalesSyncObject(remoteData);
+    var localData = SV_DATA;
+    if(!merged || !merged.groups || !localData || !localData.groups) return merged;
+
+    var restored = 0;
+    Object.keys(localData.groups).forEach(function(key){
+      var localGroup = localData.groups[key];
+      if(!localGroup || !localGroup.daily) return;
+
+      var remoteGroup = findRemoteSalesGroup(merged.groups, key, localGroup);
+      if(!remoteGroup){
+        merged.groups[key] = cloneSalesSyncObject(localGroup);
+        restored += Object.keys(localGroup.daily || {}).length;
+        return;
+      }
+
+      remoteGroup.daily = remoteGroup.daily || {};
+      var remoteDateMap = {};
+      Object.keys(remoteGroup.daily).forEach(function(ds){
+        remoteDateMap[normalizeSalesDateKey(ds)] = true;
+      });
+
+      Object.keys(localGroup.daily).forEach(function(ds){
+        var norm = normalizeSalesDateKey(ds);
+        if(!remoteDateMap[norm]){
+          remoteGroup.daily[ds] = localGroup.daily[ds];
+          remoteDateMap[norm] = true;
+          restored++;
+        }
+      });
+    });
+
+    if(restored) console.log('[Supabase] local actual daily rows preserved during load:', restored);
+    return merged;
+  }
+
   function applySalesForecastState(state){
     if(!state) return;
 
     if(state.SV_DATA){
-      SV_DATA = state.SV_DATA;
+      SV_DATA = mergeRemoteSalesDataPreservingLocalActuals(state.SV_DATA);
       window.__SV_DATA__ = SV_DATA;
     }
 
