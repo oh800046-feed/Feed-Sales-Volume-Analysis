@@ -16991,6 +16991,24 @@ setTimeout(initExecutiveScenarioLab, 800);
     try { return JSON.parse(JSON.stringify(obj)); } catch(e) { return obj; }
   }
 
+  function normalizeSalesDailyKeys(data){
+    if(!data || !data.groups) return data;
+    Object.keys(data.groups).forEach(function(key){
+      var g = data.groups[key];
+      if(!g || !g.daily) return;
+      var normalized = {};
+      Object.keys(g.daily).forEach(function(ds){
+        var nk = normalizeSalesDateKey(ds);
+        normalized[nk] = (normalized[nk] || 0) + (+g.daily[ds] || 0);
+      });
+      g.daily = normalized;
+    });
+    if(data.meta && data.meta.lastActualDate){
+      data.meta.lastActualDate = normalizeSalesDateKey(data.meta.lastActualDate);
+    }
+    return data;
+  }
+
   function findRemoteSalesGroup(remoteGroups, key, localGroup){
     if(remoteGroups[key]) return remoteGroups[key];
     var codeSig = localGroup && [localGroup.majC, localGroup.midC, localGroup.offC].join('|');
@@ -17037,6 +17055,7 @@ setTimeout(initExecutiveScenarioLab, 800);
       });
     });
 
+    normalizeSalesDailyKeys(merged);
     if(restored) console.log('[Supabase] local actual daily rows preserved during load:', restored);
     return merged;
   }
